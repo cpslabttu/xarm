@@ -10,6 +10,9 @@ ROTATE_MIN = 0
 ROTATE_CENTER = 500
 ROTATE_MAX = 1000
 
+TILT_MIN = 0
+TILT_MAX = 1000
+
 UNITS_PER_DEGREE = 1000.0 / 240.0
 NEUTRAL_ANGLE = -90.0
 ROTATION_DIRECTION = 1
@@ -93,5 +96,12 @@ def get_rotation_value(landmarks):
     
     value = ROTATE_CENTER + offset_degrees * UNITS_PER_DEGREE
     value = clamp(value, ROTATE_MIN, ROTATE_MAX)
-    
+
     return int(round(value)), angle
+
+def get_tilt_value(landmarks):
+    # Wrist landmark y runs 0 (top of frame) -> 1 (bottom).
+    # Hand high in frame -> TILT_MAX, hand low -> TILT_MIN.
+    wrist_y = landmarks[0].y
+    value = map_range(wrist_y, 0.0, 1.0, TILT_MAX, TILT_MIN)
+    return int(round(value)), wrist_y

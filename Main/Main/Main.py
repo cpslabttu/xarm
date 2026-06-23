@@ -2,8 +2,8 @@ import cv2
 import mediapipe as mp
 import time
 
-from gripper_mapping import get_gripper_value, get_rotation_value, OneEuroFilter
-from xarm_movement import move_gripper, rotate_gripper
+from gripper_mapping import get_gripper_value, get_rotation_value, get_tilt_value, OneEuroFilter
+from xarm_movement import move_gripper, rotate_gripper, tilt_gripper
 
 BaseOptions = mp.tasks.BaseOptions
 HandLandmarker = mp.tasks.vision.HandLandmarker
@@ -29,11 +29,15 @@ ROT_BETA = 0.02
 GRIP_MIN_CUTOFF = 0.5
 GRIP_BETA = 0.02
 
+TILT_MIN_CUTOFF = 0.5
+TILT_BETA = 0.02
+
 cap = cv2.VideoCapture(0)
 frame_timestamp_ms = 1
 
 rotation_filter = None
 gripper_filter = None
+tilt_filter = None
 
 with HandLandmarker.create_from_options(options) as landmarker:
     while cap.isOpened():
@@ -54,7 +58,8 @@ with HandLandmarker.create_from_options(options) as landmarker:
 
             gripper_value, pinch_ratio = get_gripper_value(lm)
             rotation_value, roll = get_rotation_value(lm)
-            
+            tilt_value, wrist_y = get_tilt_value(lm)
+
             now = time.time()
             if rotation_filter is None:
                 rotation_filter = OneEuroFilter(
@@ -68,7 +73,7 @@ with HandLandmarker.create_from_options(options) as landmarker:
                 rotation_smoothed = rotation_filter(now, rotation_value)
                 
             if gripper_filter is None:
-                gripper_smoothed = OneEuroFilter(
+                gripper_filter = OneEuroFilter(
                     now,
                     gripper_value,
                     min_cutoff=GRIP_MIN_CUTOFF,
@@ -78,8 +83,20 @@ with HandLandmarker.create_from_options(options) as landmarker:
             else:
                 gripper_smoothed = gripper_filter(now, gripper_value)
                 
-            grip_sent = move_gripper(gripper_value)
+            if tilt_filter is None:
+                tilt_filter = OneEuroFilter(
+                    now,
+                    tilt_value,
+                    min_cutoff=TILT_MIN_CUTOFF,
+                    beta=TILT_BETA
+                )
+                tilt_smoothed = tilt_value
+            else:
+                tilt_smoothed = tilt_filter(now, tilt_value)
+
+            grip_sent = move_gripper(gripper_smoothed)
             rotate_sent = rotate_gripper(rotation_smoothed)
+            tilt_sent = tilt_gripper(tilt_smoothed)
             sent = grip_sent
             
             # OpenCV Markings
@@ -118,8 +135,18 @@ with HandLandmarker.create_from_options(options) as landmarker:
             
             cv2.putText(
                 frame,
-                f"Pinch Ratio: {pinch_ratio:.2f}",
+                f"Servo 3: {tilt_value}",
                 (30, 200),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                1.1,
+                (0, 255, 255),
+                3
+            )
+
+            cv2.putText(
+                frame,
+                f"Pinch Ratio: {pinch_ratio:.2f}",
+                (30, 260),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 1.1,
                 (0, 255, 0),
