@@ -2,8 +2,8 @@ import cv2
 import mediapipe as mp
 import time
 
-from gripper_mapping import get_gripper_value, get_rotation_value, OneEuroFilter
-from xarm_movement import move_gripper, rotate_gripper
+from gripper_mapping import get_gripper_value, get_rotation_value, get_pitch_value, OneEuroFilter
+from xarm_movement import move_gripper, rotate_gripper, pitch_gripper
 
 BaseOptions = mp.tasks.BaseOptions
 HandLandmarker = mp.tasks.vision.HandLandmarker
@@ -29,11 +29,15 @@ ROT_BETA = 0.02
 GRIP_MIN_CUTOFF = 0.5
 GRIP_BETA = 0.02
 
+PITCH_MIN_CUTOFF = 0.8
+PITCH_BETA = 0.02
+
 cap = cv2.VideoCapture(0)
 frame_timestamp_ms = 1
 
 rotation_filter = None
 gripper_filter = None
+pitch_filter = None
 
 with HandLandmarker.create_from_options(options) as landmarker:
     while cap.isOpened():
@@ -54,7 +58,8 @@ with HandLandmarker.create_from_options(options) as landmarker:
 
             gripper_value, pinch_ratio = get_gripper_value(lm)
             rotation_value, roll = get_rotation_value(lm)
-            
+            pitch_value, hand_y = get_pitch_value(lm)
+
             now = time.time()
             if rotation_filter is None:
                 rotation_filter = OneEuroFilter(
@@ -77,9 +82,21 @@ with HandLandmarker.create_from_options(options) as landmarker:
                 gripper_smoothed = gripper_value
             else:
                 gripper_smoothed = gripper_filter(now, gripper_value)
-                
+
+            if pitch_filter is None:
+                pitch_filter = OneEuroFilter(
+                    now,
+                    pitch_value,
+                    min_cutoff=PITCH_MIN_CUTOFF,
+                    beta=PITCH_BETA
+                )
+                pitch_smoothed = pitch_value
+            else:
+                pitch_smoothed = pitch_filter(now, pitch_value)
+
             grip_sent = move_gripper(gripper_value)
             rotate_sent = rotate_gripper(rotation_smoothed)
+            pitch_sent = pitch_gripper(pitch_smoothed)
             sent = grip_sent
             
             # OpenCV Markings
@@ -118,8 +135,18 @@ with HandLandmarker.create_from_options(options) as landmarker:
             
             cv2.putText(
                 frame,
-                f"Pinch Ratio: {pinch_ratio:.2f}",
+                f"Servo 3: {pitch_value}",
                 (30, 200),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                1.1,
+                (0, 255, 255),
+                3
+            )
+
+            cv2.putText(
+                frame,
+                f"Pinch Ratio: {pinch_ratio:.2f}",
+                (30, 260),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 1.1,
                 (0, 255, 0),

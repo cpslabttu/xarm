@@ -10,6 +10,12 @@ ROTATE_MIN = 0
 ROTATE_CENTER = 500
 ROTATE_MAX = 1000
 
+PITCH_MIN = 0
+PITCH_MAX = 1000
+
+PITCH_Y_MIN = 0.2
+PITCH_Y_MAX = 0.8
+
 UNITS_PER_DEGREE = 1000.0 / 240.0
 NEUTRAL_ANGLE = -90.0
 ROTATION_DIRECTION = 1
@@ -93,5 +99,20 @@ def get_rotation_value(landmarks):
     
     value = ROTATE_CENTER + offset_degrees * UNITS_PER_DEGREE
     value = clamp(value, ROTATE_MIN, ROTATE_MAX)
-    
+
     return int(round(value)), angle
+
+def get_pitch_value(landmarks):
+    # Vertical position of the wrist in the frame (0 = top, 1 = bottom).
+    # Raising the hand (smaller y) tilts the gripper up.
+    y = landmarks[0].y
+
+    value = map_range(
+        y,
+        PITCH_Y_MIN,
+        PITCH_Y_MAX,
+        PITCH_MAX,
+        PITCH_MIN
+    )
+
+    return int(round(value)), y
