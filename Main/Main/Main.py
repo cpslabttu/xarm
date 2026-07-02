@@ -71,6 +71,9 @@ CURL_BETA = 0.02
 
 # Require a finger count to hold for a few frames before switching modes.
 MODE_SWITCH_FRAMES = 4
+# Ignore control-hand gestures briefly after a switch so the twitch of
+# reconfiguring both hands doesn't get sent to the new servos.
+MODE_SWITCH_FREEZE_FRAMES = 8
 
 
 def split_hands(result):
@@ -108,6 +111,7 @@ curl_filter = None
 active_mode = 0
 pending_mode = 0
 mode_counter = 0
+freeze_counter = 0
 
 
 with HandLandmarker.create_from_options(options) as landmarker:
@@ -144,9 +148,13 @@ with HandLandmarker.create_from_options(options) as landmarker:
                 if mode_counter >= MODE_SWITCH_FRAMES:
                     active_mode = target
                     mode_counter = 0
+                    freeze_counter = MODE_SWITCH_FREEZE_FRAMES
             else:
                 pending_mode = active_mode
                 mode_counter = 0
+
+        if freeze_counter > 0:
+            freeze_counter -= 1
 
         mode = MODES[active_mode]
 
@@ -166,9 +174,10 @@ with HandLandmarker.create_from_options(options) as landmarker:
                 roll_norm = roll_filter(now, roll_norm)
                 curl_norm = curl_filter(now, curl_norm)
 
-            set_servo(mode["pinch"], pinch_norm)
-            set_servo(mode["roll"], roll_norm)
-            set_servo(mode["curl"], curl_norm)
+            if freeze_counter == 0:
+                set_servo(mode["pinch"], pinch_norm)
+                set_servo(mode["roll"], roll_norm)
+                set_servo(mode["curl"], curl_norm)
 
             draw_hand(frame, control_lm, frame_width, frame_height, (0, 255, 0))
 

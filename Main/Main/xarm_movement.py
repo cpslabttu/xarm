@@ -33,15 +33,40 @@ SERVO_RANGES = {
     SERVO_BASE: (0, 1000),       # 0.5 norm = centered
 }
 
-DURATION_MS = 60
 COMMAND_INTERVAL = 0.06
-MIN_DELTA = 8
+MIN_DELTA = 3
+
+# Max servo units a joint may move per command (slew-rate limit). Small
+# values = slow/smooth; the heavy lower joints are kept slow so gesture
+# jitter and mode switches can't fling the arm. Tune per joint.
+SERVO_MAX_STEP = {
+    SERVO_GRIP: 40,
+    SERVO_ROTATE: 30,
+    SERVO_PITCH: 18,
+    SERVO_ELBOW: 8,
+    SERVO_SHOULDER: 8,
+    SERVO_BASE: 10,
+}
+
+# How long each servo takes to reach a commanded step. Longer = smoother
+# physical motion; the lower joints get more easing.
+SERVO_DURATION = {
+    SERVO_GRIP: 60,
+    SERVO_ROTATE: 70,
+    SERVO_PITCH: 120,
+    SERVO_ELBOW: 200,
+    SERVO_SHOULDER: 200,
+    SERVO_BASE: 180,
+}
 
 
 arm = xarm.Controller("USB")
 
 last_sent = {servo_id: 0.0 for servo_id in ALL_SERVOS}
 last_value = {servo_id: None for servo_id in ALL_SERVOS}
+
+# Slew-limited target the servo is currently easing toward.
+servo_target = {servo_id: None for servo_id in ALL_SERVOS}
 
 
 def clamp(value, low, high):
@@ -62,7 +87,7 @@ def move_servo(servo_id, value, low, high):
     arm.setPosition(
         servo_id,
         value,
-        duration=DURATION_MS,
+        duration=SERVO_DURATION[servo_id],
         wait=False
     )
 
@@ -72,10 +97,21 @@ def move_servo(servo_id, value, low, high):
 
 
 def set_servo(servo_id, norm):
-    """Drive a servo from a normalized 0..1 gesture value."""
+    """Ease a servo toward a normalized 0..1 gesture value, slew-limited."""
     low, high = SERVO_RANGES[servo_id]
-    value = low + norm * (high - low)
-    return move_servo(servo_id, value, min(low, high), max(low, high))
+    desired = low + norm * (high - low)
+
+    target = servo_target[servo_id]
+    if target is None:
+        # First command: snap to avoid slewing from an arbitrary origin.
+        target = desired
+    else:
+        step = SERVO_MAX_STEP[servo_id]
+        delta = max(-step, min(step, desired - target))
+        target = target + delta
+
+    servo_target[servo_id] = target
+    return move_servo(servo_id, target, min(low, high), max(low, high))
 
 
 def servo_units(servo_id, norm):
