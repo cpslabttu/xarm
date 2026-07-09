@@ -7,11 +7,13 @@ from gripper_mapping import (
     get_roll,
     get_curl,
     count_extended_fingers,
+    clamp,
     OneEuroFilter,
 )
 from xarm_movement import (
     set_servo,
     servo_units,
+    ALL_SERVOS,
     SERVO_GRIP,
     SERVO_ROTATE,
     SERVO_PITCH,
@@ -68,6 +70,20 @@ MODES = [
     },
 ]
 
+GESTURES = ("pinch", "roll", "curl")
+
+# Gestures drive servos as offsets from an anchor, not as absolute
+# positions. The anchor is re-captured whenever control re-engages (hold
+# released, mode switched, control hand reacquired): the servos keep the
+# position they were left at, and the hand pose at that instant becomes
+# the new "no change" reference. Opening your hand after a hold therefore
+# means "don't move the gripper" rather than "open the gripper".
+#
+# A gesture must move more than this much before it commands anything, so
+# the incidental pinch/curl wobble from tilting your palm doesn't drag the
+# other two servos along with it.
+GESTURE_DEADZONE = 0.03
+
 # Smoothing per gesture (not per servo), so the filters carry over when
 # the mode switches instead of jumping.
 PINCH_MIN_CUTOFF = 0.5
@@ -101,6 +117,14 @@ def split_hands(result):
     return control_lm, mode_lm
 
 
+def apply_deadzone(delta):
+    if abs(delta) <= GESTURE_DEADZONE:
+        return 0.0
+    # Subtract the deadzone rather than stepping past it, so motion starts
+    # from zero instead of jumping once the threshold is crossed.
+    return delta - GESTURE_DEADZONE if delta > 0 else delta + GESTURE_DEADZONE
+
+
 def draw_hand(frame, landmarks, width, height, color):
     points = [(int(p.x * width), int(p.y * height)) for p in landmarks]
     for start_idx, end_idx in HAND_CONNECTIONS:
@@ -121,6 +145,15 @@ pending_target = 0
 mode_counter = 0
 freeze_counter = 0
 hold_active = False
+
+# Last normalized value commanded to each servo; survives holds and mode
+# switches, and is what the next anchor builds on. None = never driven.
+commanded_norm = {servo_id: None for servo_id in ALL_SERVOS}
+
+# Anchor: hand pose and servo position captured at the last re-engage.
+anchor_hand = {}
+anchor_servo = {}
+rebaseline = True
 
 
 with HandLandmarker.create_from_options(options) as landmarker:
@@ -164,6 +197,9 @@ with HandLandmarker.create_from_options(options) as landmarker:
                         active_mode = target
                     mode_counter = 0
                     freeze_counter = MODE_SWITCH_FREEZE_FRAMES
+                    # Re-anchor when control comes back, whichever way we
+                    # got here: the servos stay put, the hand pose resets.
+                    rebaseline = True
             else:
                 pending_target = current
                 mode_counter = 0
@@ -189,32 +225,49 @@ with HandLandmarker.create_from_options(options) as landmarker:
                 roll_norm = roll_filter(now, roll_norm)
                 curl_norm = curl_filter(now, curl_norm)
 
-            # The filters keep tracking while held, so releasing the hold
-            # resumes from the hand's current pose rather than a stale one.
-            # The per-servo slew limit then eases the arm across the gap.
+            hand_norm = {
+                "pinch": pinch_norm,
+                "roll": roll_norm,
+                "curl": curl_norm,
+            }
+
+            # The filters keep tracking while held, so the anchor captured on
+            # release reflects the hand's real pose rather than a stale one.
             if freeze_counter == 0 and not hold_active:
-                set_servo(mode["pinch"], pinch_norm)
-                set_servo(mode["roll"], roll_norm)
-                set_servo(mode["curl"], curl_norm)
+                if rebaseline:
+                    for gesture in GESTURES:
+                        servo_id = mode[gesture]
+                        if commanded_norm[servo_id] is None:
+                            # Never driven: adopt the hand pose so the very
+                            # first engage behaves as a plain absolute map.
+                            commanded_norm[servo_id] = hand_norm[gesture]
+                        anchor_hand[gesture] = hand_norm[gesture]
+                        anchor_servo[gesture] = commanded_norm[servo_id]
+                    rebaseline = False
+
+                for gesture in GESTURES:
+                    servo_id = mode[gesture]
+                    delta = apply_deadzone(hand_norm[gesture] - anchor_hand[gesture])
+                    value = clamp(anchor_servo[gesture] + delta, 0.0, 1.0)
+                    commanded_norm[servo_id] = value
+                    set_servo(servo_id, value)
 
             hand_color = (0, 165, 255) if hold_active else (0, 255, 0)
             draw_hand(frame, control_lm, frame_width, frame_height, hand_color)
 
-            cv2.putText(
-                frame,
-                f"pinch -> S{mode['pinch']}: {servo_units(mode['pinch'], pinch_norm)}",
-                (30, 130), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (255, 0, 0), 2
-            )
-            cv2.putText(
-                frame,
-                f"roll  -> S{mode['roll']}: {servo_units(mode['roll'], roll_norm)}",
-                (30, 170), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 0, 255), 2
-            )
-            cv2.putText(
-                frame,
-                f"curl  -> S{mode['curl']}: {servo_units(mode['curl'], curl_norm)}",
-                (30, 210), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 255), 2
-            )
+            label_colors = ((255, 0, 0), (0, 0, 255), (0, 255, 255))
+            for row, (gesture, color) in enumerate(zip(GESTURES, label_colors)):
+                servo_id = mode[gesture]
+                shown = commanded_norm[servo_id]
+                units = "--" if shown is None else servo_units(servo_id, shown)
+                cv2.putText(
+                    frame,
+                    f"{gesture:<5} -> S{servo_id}: {units}",
+                    (30, 130 + 40 * row), cv2.FONT_HERSHEY_SIMPLEX, 0.9, color, 2
+                )
+        else:
+            # Hand left the frame; re-anchor rather than snap when it returns.
+            rebaseline = True
 
         if mode_lm is not None:
             draw_hand(frame, mode_lm, frame_width, frame_height, (255, 200, 0))
