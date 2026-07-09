@@ -44,6 +44,14 @@ HAND_CONNECTIONS = [
 CONTROL_HAND = "Right"
 MODE_HAND = "Left"
 
+# Sentinel for the "freeze the arm where it is" state, used alongside the
+# mode indices in the debounce logic below.
+HOLD = "hold"
+
+# Off-hand finger counts -> what they select.
+MODE_FINGERS = {1: 0, 2: 1}
+HOLD_FINGERS = 4  # open palm
+
 # Each mode repoints the 3 control gestures at different servos.
 MODES = [
     {
@@ -109,9 +117,10 @@ roll_filter = None
 curl_filter = None
 
 active_mode = 0
-pending_mode = 0
+pending_target = 0
 mode_counter = 0
 freeze_counter = 0
+hold_active = False
 
 
 with HandLandmarker.create_from_options(options) as landmarker:
@@ -129,28 +138,34 @@ with HandLandmarker.create_from_options(options) as landmarker:
         result = landmarker.detect_for_video(mp_image, frame_timestamp_ms)
         control_lm, mode_lm = split_hands(result)
 
-        # --- Mode selection from the off-hand's finger count ---
+        # --- Mode / hold selection from the off-hand's finger count ---
         finger_count = None
         if mode_lm is not None:
             finger_count = count_extended_fingers(mode_lm)
             target = None
-            if finger_count == 1:
-                target = 0
-            elif finger_count == 2:
-                target = 1
+            if finger_count in MODE_FINGERS:
+                target = MODE_FINGERS[finger_count]
+            elif finger_count == HOLD_FINGERS:
+                target = HOLD
 
-            if target is not None and target != active_mode:
-                if target == pending_mode:
+            current = HOLD if hold_active else active_mode
+            if target is not None and target != current:
+                if target == pending_target:
                     mode_counter += 1
                 else:
-                    pending_mode = target
+                    pending_target = target
                     mode_counter = 1
                 if mode_counter >= MODE_SWITCH_FRAMES:
-                    active_mode = target
+                    if target == HOLD:
+                        hold_active = True
+                    else:
+                        # Leaving hold also picks the mode that released it.
+                        hold_active = False
+                        active_mode = target
                     mode_counter = 0
                     freeze_counter = MODE_SWITCH_FREEZE_FRAMES
             else:
-                pending_mode = active_mode
+                pending_target = current
                 mode_counter = 0
 
         if freeze_counter > 0:
@@ -174,12 +189,16 @@ with HandLandmarker.create_from_options(options) as landmarker:
                 roll_norm = roll_filter(now, roll_norm)
                 curl_norm = curl_filter(now, curl_norm)
 
-            if freeze_counter == 0:
+            # The filters keep tracking while held, so releasing the hold
+            # resumes from the hand's current pose rather than a stale one.
+            # The per-servo slew limit then eases the arm across the gap.
+            if freeze_counter == 0 and not hold_active:
                 set_servo(mode["pinch"], pinch_norm)
                 set_servo(mode["roll"], roll_norm)
                 set_servo(mode["curl"], curl_norm)
 
-            draw_hand(frame, control_lm, frame_width, frame_height, (0, 255, 0))
+            hand_color = (0, 165, 255) if hold_active else (0, 255, 0)
+            draw_hand(frame, control_lm, frame_width, frame_height, hand_color)
 
             cv2.putText(
                 frame,
@@ -201,9 +220,11 @@ with HandLandmarker.create_from_options(options) as landmarker:
             draw_hand(frame, mode_lm, frame_width, frame_height, (255, 200, 0))
 
         # --- Status header ---
+        header = f"HOLD ({mode['name']})" if hold_active else mode["name"]
+        header_color = (0, 165, 255) if hold_active else (255, 255, 255)
         cv2.putText(
-            frame, mode["name"], (30, 60),
-            cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 255, 255), 3
+            frame, header, (30, 60),
+            cv2.FONT_HERSHEY_SIMPLEX, 1.0, header_color, 3
         )
         if finger_count is not None:
             cv2.putText(
