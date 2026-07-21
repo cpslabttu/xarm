@@ -2,9 +2,10 @@ import xarm
 
 arm = xarm.Controller('USB')
 
-def reset_servos():
-    for i in range(6, 0, -1):
-        arm.setPosition(i, 500, duration=1000, wait=True)
+def initiate(start_pos):
+    arm.setPosition(3, start_pos, wait=True)
+    arm.setPosition(2, 430) # Rotate gripper to parallel
+    arm.setPosition(6, 600) # Rotate arm to middle
         
 def close_gripper(gripper_strength):
     arm.setPosition(1, gripper_strength, wait=True)
